@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Turbo Road Racing</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#101820;color:white;font-family:Arial,sans-serif;overflow:hidden;touch-action:none}
+#game{display:block;width:100vw;height:100dvh}
+#hud{position:absolute;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;gap:8px;pointer-events:none}
+.panel{background:#07131dcc;padding:10px 14px;border:1px solid #ffffff40;border-radius:12px;font-weight:bold}
+#speed{color:#57f7ff}
+#overlay{position:absolute;inset:0;background:#07131dcc;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px}
+.box{max-width:360px;background:#122433;border:1px solid #ffffff35;border-radius:20px;padding:25px;width:100%}
+h1{color:#57f7ff;margin:0 0 12px}
+p{line-height:1.5;color:#d4e3ed}
+button{border:0;border-radius:14px;padding:15px 20px;font-size:17px;font-weight:bold;background:#00d7e8;color:#06151c;cursor:pointer}
+#controls{position:absolute;bottom:22px;left:0;right:0;display:flex;justify-content:space-between;align-items:end;padding:0 18px;pointer-events:none}
+.pad{display:flex;gap:12px}
+.control{pointer-events:auto;width:70px;height:65px;border-radius:18px;background:#ffffff30;color:white;border:2px solid #ffffff70;font-size:27px;touch-action:none}
+#nitro{pointer-events:auto;background:#ff9f1c;color:#251500;font-size:15px;width:76px}
+#hint{font-size:12px;color:#a9c5d8}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div class="panel">🏁 TURBO ROAD<br><span id="score">Score: 0</span></div>
+  <div class="panel" id="speed">0 km/h</div>
+</div>
+
+<div id="overlay">
+  <div class="box">
+    <h1>🏎 TURBO ROAD</h1>
+    <p>Dodge traffic, use nitro and race for the highest score!</p>
+    <p>⬅ ➡ Steer your car<br>🔥 Nitro gives you a speed boost</p>
+    <button id="start">START RACING</button>
+    <p id="hint">Mobile racing • Touch controls • Endless road</p>
+  </div>
+</div>
+
+<div id="controls">
+  <div class="pad">
+    <button class="control" id="left" aria-label="Steer left">◀</button>
+    <button class="control" id="right" aria-label="Steer right">▶</button>
+  </div>
+  <button class="control" id="nitro">🔥<br>NITRO</button>
+</div>
+
+<script>
+(() => {
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const overlay = document.getElementById("overlay");
+const startBtn = document.getElementById("start");
+const scoreText = document.getElementById("score");
+const speedText = document.getElementById("speed");
+
+let W=0,H=0,dpr=1;
+let running=false, gameOver=false;
+let playerX=0, roadOffset=0, distance=0, score=0;
+let speed=0, nitro=0, spawnTimer=0, lastTime=0;
+let traffic=[];
+let steer=0, boosting=false;
+let best=Number(localStorage.getItem("turboBest")||0);
+
+function resize(){
+  dpr=Math.min(window.devicePixelRatio||1,2);
+  W=window.innerWidth; H=window.innerHeight;
+  canvas.width=Math.round(W*dpr);
+  canvas.height=Math.round(H*dpr);
+  canvas.style.width=W+"px";
+  canvas.style.height=H+"px";
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener("resize",resize);
+resize();
+
+function roadWidth(y){
+  const horizon=H*.24;
+  const t=Math.max(0,Math.min(1,(y-horizon)/(H-horizon)));
+  return W*(.12+.78*t);
+}
+function roadCenter(y){return W*.5+Math.sin(roadOffset*.0004)*W*.025}
+
+function polygon(points,color){
+  ctx.fillStyle=color;
+  ctx.beginPath();
+  ctx.moveTo(points[0][0],points[0][1]);
+  for(let i=1;i<points.length;i++)ctx.lineTo(points[i][0],points[i][1]);
+  ctx.closePath();ctx.fill();
+}
+
+function drawRoad(){
+  ctx.fillStyle="#76c45a";ctx.fillRect(0,0,W,H);
+  // Grass stripes
+  const stripe=(roadOffset*.35)%80;
+  for(let y=-80+stripe;y<H;y+=80){
+    ctx.fillStyle="#6aba4d";ctx.fillRect(0,y,W,40);
+  }
+  // Distant sky
+  const sky=ctx.createLinearGradient(0,0,0,H*.38);
+  sky.addColorStop(0,"#55c9ff");sky.addColorStop(1,"#e4f5ff");
+  ctx.fillStyle=sky;ctx.fillRect(0,0,W,H*.34);
+  // Hills
+  polygon([[0,H*.32],[W*.12,H*.19],[W*.26,H*.30],[W*.4,H*.17],[W*.57,H*.30],[W*.77,H*.18],[W,H*.29],[W,H*.4],[0,H*.4]],"#659b68");
+
+  const horizon=H*.24;
+  const topW=roadWidth(horizon), bottomW=roadWidth(H);
+  const cx=roadCenter(H);
+  polygon([[W/2-topW/2,horizon],[W/2+topW/2,horizon],[cx+bottomW/2,H],[cx-bottomW/2,H]],"#414850");
+  // Road edges
+  for(let i=0;i<24;i++){
+    let t1=i/24,t2=(i+1)/24;
+    let y1=horizon+(H-horizon)*t1,y2=horizon+(H-horizon)*t2;
+    let w1=roadWidth(y1),w2=roadWidth(y2);
+    let c1=roadCenter(y1),c2=roadCenter(y2);
+    const shift=(Math.floor(i+roadOffset*.035)%2===0);
+    polygon([[c1-w1/2,y1],[c1-w1/2+w1*.035,y1],[c2-w2/2+w2*.035,y2],[c2-w2/2,y2]],shift?"#fff":"#e34b42");
+    polygon([[c1+w1/2-w1*.035,y1],[c1+w1/2,y1],[c2+w2/2,y2],[c2+w2/2-w2*.035,y2]],shift?"#fff":"#e34b42");
+  }
+  // Lane markers
+  for(let lane=1;lane<=2;lane++){
+    for(let i=0;i<15;i++){
+      let t=((i/15+roadOffset*.0015)%1);
+      let y=horizon+(H-horizon)*t;
+      let dash=(H-horizon)*.018*t+.5;
+      let width=roadWidth(y);
+      let cx=roadCenter(y);
+      let x=cx-width/2+width*lane/3;
+      ctx.fillStyle="#fff9";
+      ctx.fillRect(x-dash*.07,y,dash*.14,dash);
+    }
+  }
+}
+
+function car(x,y,w,h,color,isPlayer=false){
+  ctx.save();
+  ctx.translate(x,y);
+  // Shadow
+  ctx.fillStyle="#0005";
+  ctx.beginPath();ctx.ellipse(0,h*.42,w*.58,h*.15,0,0,Math.PI*2);ctx.fill();
+  // Wheels
+  ctx.fillStyle="#15191d";
+  ctx.fillRect(-w*.53,-h*.28,w*.19,h*.33);
+  ctx.fillRect(w*.34,-h*.28,w*.19,h*.33);
+  ctx.fillRect(-w*.53,h*.18,w*.19,h*.28);
+  ctx.fillRect(w*.34,h*.18,w*.19,h*.28);
+  // Body
+  polygon([[-w*.43,h*.43],[-w*.48,-h*.18],[-w*.3,-h*.43],[w*.3,-h*.43],[w*.48,-h*.18],[w*.43,h*.43]],color);
+  // Windows
+  polygon([[-w*.29,-h*.16],[-w*.2,-h*.34],[w*.2,-h*.34],[w*.29,-h*.16]],"#b7e8f7");
+  polygon([[-w*.29,-h*.09],[w*.29,-h*.09],[w*.32,h*.12],[-w*.32,h*.12]],"#243949");
+  // Lights
+  ctx.fillStyle=isPlayer?"#fff":"#ff4040";
+  ctx.fillRect(-w*.34,h*.27,w*.19,h*.08);
+  ctx.fillRect(w*.15,h*.27,w*.19,h*.08);
+  if(isPlayer){
+    ctx.fillStyle="#ffffff99";
+    ctx.fillRect(-w*.04,-h*.29,w*.08,h*.53);
+  }
+  ctx.restore();
+}
+
+function playerPos(){
+  return roadCenter(H-H*.12)+playerX*roadWidth(H)*.37;
+}
+
+function draw(){
+  drawRoad();
+  const horizon=H*.24;
+  // Traffic is drawn from farthest to nearest
+  traffic.slice().sort((a,b)=>a.z-b.z).forEach(t=>{
+    const p=t.z;
+    const y=horizon+(H-horizon)*p;
+    const rw=roadWidth(y);
+    const x=roadCenter(y)+(t.lane-.5)*rw*.66;
+    const cw=Math.max(12,rw*.105);
+    const ch=cw*1.65;
+    car(x,y,cw,ch,t.color,false);
+  });
+  const pw=Math.min(W*.18,65);
+  car(playerPos(),H*.81,pw,pw*1.65,"#04c9f4",true);
+  if(boosting&&running){
+    ctx.fillStyle="#ff9f1c";
+    for(let i=0;i<8;i++){
+      const x=playerPos()+(Math.random()-.5)*pw*.6;
+      const y=H*.84+Math.random()*H*.09;
+      ctx.globalAlpha=Math.random()*.6;
+      ctx.beginPath();ctx.arc(x,y,2+Math.random()*5,0,Math.PI*2);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+function reset(){
+  playerX=0;roadOffset=0;distance=0;score=0;
+  speed=150;nitro=100;spawnTimer=.6;traffic=[];
+  steer=0;boosting=false;gameOver=false;
+  lastTime=performance.now();
+}
+
+function endGame(){
+  running=false;gameOver=true;
+  const finalScore=Math.floor(score);
+  if(finalScore>best){
+    best=finalScore;
+    localStorage.setItem("turboBest",String(best));
+  }
+  overlay.innerHTML=`
+    <div class="box">
+      <h1>💥 CRASH!</h1>
+      <p>Your score: <strong>${finalScore}</strong></p>
+      <p>Best score: <strong>${best}</strong></p>
+      <button id="restart">RACE AGAIN</button>
+      <p id="hint">Avoid traffic and keep to the road.</p>
+    </div>`;
+  overlay.style.display="flex";
+  document.getElementById("restart").addEventListener("click",startGame);
+}
+
+function update(dt){
+  if(!running)return;
+  boosting=boostHeld&&nitro>0;
+  if(boosting){nitro=Math.max(0,nitro-35*dt);}
+  else nitro=Math.min(100,nitro+12*dt);
+
+  speed=boosting?245:150+Math.min(55,score*.012);
+  roadOffset+=speed*dt;
+  distance+=speed*dt;
+  score+=speed*dt*.08;
+
+  playerX+=steer*dt*1.6;
+  playerX=Math.max(-1.05,Math.min(1.05,playerX));
+
+  spawnTimer-=dt;
+  if(spawnTimer<=0){
+    traffic.push({
+      lane:Math.floor(Math.random()*3)-1,
+      z:0,
+      color:["#f34242","#ffd23f","#a16bff","#f5f5f5","#29cc79"][Math.floor(Math.random()*5)]
+    });
+    spawnTimer=Math.max(.48,1.15-score*.0003)+Math.random()*.35;
+  }
+
+  traffic.forEach(t=>t.z+=dt*(.22+speed*.00065));
+  traffic=traffic.filter(t=>t.z<1.2);
+
+  const px=playerPos();
+  const py=H*.81;
+  const playerW=Math.min(W*.18,65);
+
+  for(const t of traffic){
+    const y=H*.24+(H-H*.24)*t.z;
+    const x=roadCenter(y)+(t.lane-.5)*roadWidth(y)*.66;
+    const tw=Math.max(12,roadWidth(y)*.105);
+    if(Math.abs(y-py)<(playerW*1.1)&&Math.abs(x-px)<(playerW+tw)*.48){
+      endGame();return;
+    }
+  }
+  if(Math.abs(playerX)>1.0)speed=Math.max(80,speed-80*dt);
+  scoreText.textContent="Score: "+Math.floor(score);
+  speedText.textContent=Math.round(speed)+" km/h";
+}
+
+let boostHeld=false;
+function startGame(){
+  overlay.style.display="none";
+  reset();running=true;
+}
+startBtn.addEventListener("click",startGame);
+
+function holdButton(id,down,up){
+  const el=document.getElementById(id);
+  el.addEventListener("pointerdown",e=>{e.preventDefault();down();});
+  ["pointerup","pointercancel","lostpointercapture"].forEach(evt=>
+    el.addEventListener(evt,e=>{up();})
+  );
+}
+holdButton("left",()=>steer=-1,()=>{if(steer===-1)steer=0;});
+holdButton("right",()=>steer=1,()=>{if(steer===1)steer=0;});
+holdButton("nitro",()=>boostHeld=true,()=>boostHeld=false);
+
+// Keyboard support for computers
+window.addEventListener("keydown",e=>{
+  if(e.key==="ArrowLeft"||e.key==="a")steer=-1;
+  if(e.key==="ArrowRight"||e.key==="d")steer=1;
+  if(e.key===" "||e.key==="ArrowUp")boostHeld=true;
+});
+window.addEventListener("keyup",e=>{
+  if(["ArrowLeft","a","ArrowRight","d"].includes(e.key))steer=0;
+  if(e.key===" "||e.key==="ArrowUp")boostHeld=false;
+});
+
+// Swipe steering
+let touchStart=null;
+canvas.addEventListener("pointerdown",e=>{
+  if(e.pointerType==="touch")touchStart=e.clientX;
+});
+canvas.addEventListener("pointerup",e=>{
+  if(touchStart!==null){
+    const dx=e.clientX-touchStart;
+    if(Math.abs(dx)>25)playerX=Math.max(-1,Math.min(1,playerX+dx/W*2));
+    touchStart=null;
+  }
+});
+
+function loop(now){
+  const dt=Math.min((now-lastTime)/1000,.04);
+  lastTime=now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+lastTime=performance.now();
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
+
+<html>
+<head>
+  <meta http-equiv="CONTENT-TYPE" content="text/html; charset=UTF-8">
+  <link rel="stylesheet" href="styles/style.css"/>
+  <title>Hello, World!</title>
+</head>
+<body>
+  <h1>
+    Hello, World!
+  </h1>
+</body>
+</html>
